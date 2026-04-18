@@ -1,0 +1,16 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.portfolio_composition_draft.json
+
+# Keep the deploy image small and avoid baking monthly client/report inputs into it.
+# Users can upload support ZIPs/files through the app.
+Reference/.DS_Store
+Reference/*.zip
+Reference/February 2026/
+Reference/*.numbers
+Reference/*Practice*
+Reference/Get Factset Model Codes.csv

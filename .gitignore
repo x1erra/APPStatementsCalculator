@@ -1,4 +1,5 @@
 .DS_Store
+.env
 .portfolio_composition_draft.json
 .venv/
 __pycache__/
