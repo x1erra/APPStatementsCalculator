@@ -18,13 +18,13 @@ except ImportError:  # pragma: no cover
 
 
 st.set_page_config(
-    page_title="Portfolio Composition Calculator",
+    page_title="APP Look-Thru Reporting",
     page_icon="📊",
     layout="wide",
 )
 
 
-MANUAL_TEXT = """Portfolio Composition Calculator Manual
+MANUAL_TEXT = """APP Look-Thru Reporting Manual
 
 This manual explains exactly how to produce the two sections of the Portfolio Composition report:
 
@@ -1371,16 +1371,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("Portfolio Composition Calculator")
+st.title("APP Look-Thru Reporting")
 st.markdown(
-    '<div class="app-subtitle">Streamlit calculator for Portfolio Composition and Portfolio Breakdown reporting.</div>',
+    '<div class="app-subtitle">Portfolio Composition and Portfolio Breakdown reporting.</div>',
     unsafe_allow_html=True,
 )
 st.warning(
     "Important: Ensure you upload the correct support files matching the funds in your holdings. Incorrect files will produce wrong results."
 )
 
-with st.expander("Portfolio Composition Calculator Manual"):
+with st.expander("APP Look-Thru Reporting Manual"):
     st.markdown(MANUAL_TEXT)
 
 if "draft_initialized" not in st.session_state:
