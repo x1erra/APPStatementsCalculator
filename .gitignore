@@ -3,3 +3,9 @@
 .venv/
 __pycache__/
 *.pyc
+Reference/.DS_Store
+Reference/*.zip
+Reference/February 2026/
+Reference/*.numbers
+Reference/*Practice*
+Reference/Get Factset Model Codes.csv
