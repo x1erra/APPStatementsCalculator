@@ -1,0 +1,5 @@
+.DS_Store
+.portfolio_composition_draft.json
+.venv/
+__pycache__/
+*.pyc
