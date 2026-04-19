@@ -3741,11 +3741,17 @@ def render_calculation_results(calculation_state: dict) -> None:
         "Fund Code",
     ].nunique()
 
-    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    reporting_period = results.get("reporting_period") or "Not detected"
+    summary_col1, summary_col2, summary_col3, summary_col4, summary_col5 = st.columns(5)
     summary_col1.metric("Holdings Rows Used", len(results["holdings"]))
     summary_col2.metric("Support Files Matched", support_file_matches)
     summary_col3.metric("Total Market Value", format_currency(results["portfolio_total"]))
     summary_col4.metric("SMA Holdings Used", sma_holdings_used)
+    summary_col5.metric("Asset Allocation Source Period", reporting_period)
+    if results.get("reporting_period"):
+        st.caption(
+            "The asset-allocation source period comes from the uploaded FactSet support files and may be one month earlier than the statement market-value date."
+        )
 
     composition_tab, breakdown_tab, diversification_tab = st.tabs(
         ["Portfolio Composition", "Portfolio Breakdown", "Portfolio Diversification"]
