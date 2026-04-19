@@ -388,7 +388,24 @@ DIVERSIFICATION_GROUP_ORDER = [
     "Energy",
     "Communication Services",
     "Materials",
+    "Consumer Staples",
+    "Real Estate",
+    "Utilities",
 ]
+
+DIVERSIFICATION_SECTOR_GROUPS = {
+    "Financials",
+    "Information Technology",
+    "Industrials",
+    "Consumer Discretionary",
+    "Health Care",
+    "Energy",
+    "Communication Services",
+    "Materials",
+    "Consumer Staples",
+    "Real Estate",
+    "Utilities",
+}
 
 ASSET_CLASS_DETECTION = {
     "EQUITY": "Equity",
@@ -502,9 +519,9 @@ DIVERSIFICATION_DIRECT = {
     "DERIVATIVES": "Other",
     "CURRENCY FORWARDS": "Other",
     "FDS OUTLIER": "Other",
-    "CONSUMER STAPLES": "Other",
-    "REAL ESTATE": "Other",
-    "UTILITIES": "Other",
+    "CONSUMER STAPLES": "Consumer Staples",
+    "REAL ESTATE": "Real Estate",
+    "UTILITIES": "Utilities",
     "OTHER": "Other",
 }
 
@@ -2480,6 +2497,23 @@ def build_diversification_summary(comp_df: pd.DataFrame, portfolio_total: float)
             ignore_index=True,
         )
 
+    sector_totals = (
+        diversification_rows[
+            diversification_rows["Diversification Group"].isin(DIVERSIFICATION_SECTOR_GROUPS)
+        ]
+        .groupby("Diversification Group")["Weighted MV (CAD)"]
+        .sum()
+    )
+    low_sector_groups = set(
+        sector_totals[(sector_totals / portfolio_total * 100.0) < 2.0].index.tolist()
+    )
+    if low_sector_groups:
+        low_sector_mask = diversification_rows["Diversification Group"].isin(low_sector_groups)
+        diversification_rows.loc[low_sector_mask, "Diversification Group"] = "Other"
+        diversification_rows.loc[low_sector_mask, "Diversification Mapping Source"] = (
+            "Sector under 2% to Other"
+        )
+
     diversification_pivot = (
         diversification_rows.pivot_table(
             index="Diversification Group",
@@ -2505,6 +2539,7 @@ def build_diversification_summary(comp_df: pd.DataFrame, portfolio_total: float)
     diversification_df["Portfolio %"] = (
         diversification_df["Strategic Asset Allocation %"] + diversification_df["Tactical Asset Allocation %"]
     )
+    diversification_df = diversification_df[diversification_df["Portfolio %"].abs() > 0.000001].copy()
     diversification_total_row = pd.DataFrame(
         [
             {
