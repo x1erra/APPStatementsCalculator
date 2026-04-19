@@ -1106,6 +1106,30 @@ def derive_support_code_from_fund_code(fund_code: object) -> Optional[str]:
     return None
 
 
+def derive_class_support_code_from_factset_code(code: object) -> Optional[str]:
+    normalized = normalize_code(code)
+    if not normalized or not normalized.isdigit():
+        return None
+    numeric = int(normalized)
+    if numeric % 2 != 0:
+        return normalized
+    candidate = numeric + 1
+    if 10000 <= candidate <= 99999:
+        return str(candidate)
+    return None
+
+
+def derive_250xx_support_code_from_fund_code(fund_code: object) -> Optional[str]:
+    normalized = normalize_code(fund_code)
+    if not normalized or len(normalized) != 5:
+        return None
+    suffix = normalized[-3:]
+    candidate = f"25{suffix}"
+    if candidate.isdigit():
+        return candidate
+    return None
+
+
 def lookup_support_codes_from_factset(
     fund_code: object,
     holding_type: object = None,
@@ -1163,6 +1187,14 @@ def build_support_candidates(
     series_suffix = infer_model_series_suffix(fund_description)
     if series_suffix == "C" and derived:
         candidates.append(derived)
+    if series_suffix == "C":
+        direct_class_candidate = derive_250xx_support_code_from_fund_code(fund_code)
+        if direct_class_candidate:
+            candidates.append(direct_class_candidate)
+        for factset_code in factset_codes:
+            class_candidate = derive_class_support_code_from_factset_code(factset_code)
+            if class_candidate:
+                candidates.append(class_candidate)
     candidates.extend(factset_codes)
     if derived:
         candidates.append(derived)
