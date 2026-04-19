@@ -609,6 +609,15 @@ def allocation_bucket_for_holding_type(value: object) -> str:
     return ""
 
 
+def infer_model_series_suffix(description: object) -> str:
+    text = f" {normalize_key(description)} "
+    if any(token in text for token in [" POOL ", " POOL I ", " POOL F "]):
+        return "P"
+    if any(token in text for token in [" CLASS ", " CLASS F ", " CC ", " CORPORATE "]):
+        return "C"
+    return ""
+
+
 def get_latest_reference_file(stem: str, suffixes: Iterable[str]) -> Optional[Path]:
     candidates: List[Path] = []
     stem_key = normalize_key(stem)
@@ -1100,6 +1109,7 @@ def derive_support_code_from_fund_code(fund_code: object) -> Optional[str]:
 def lookup_support_codes_from_factset(
     fund_code: object,
     holding_type: object = None,
+    fund_description: object = None,
     factset_override: Optional[dict] = None,
 ) -> List[str]:
     entered_code = normalize_code(fund_code)
@@ -1117,6 +1127,14 @@ def lookup_support_codes_from_factset(
         if not typed_matches.empty:
             matches = typed_matches
 
+    series_suffix = infer_model_series_suffix(fund_description)
+    if series_suffix and "factset_model_code" in matches.columns:
+        series_matches = matches[
+            matches["factset_model_code"].apply(lambda value: normalize_text(value).upper().endswith(f"_{series_suffix}"))
+        ].copy()
+        if not series_matches.empty:
+            matches = series_matches
+
     codes: List[str] = []
     for value in matches["mandate_code"].tolist():
         code = normalize_code(value)
@@ -1129,6 +1147,7 @@ def build_support_candidates(
     fund_code: object,
     mandate_code: object = None,
     holding_type: object = None,
+    fund_description: object = None,
     factset_override: Optional[dict] = None,
 ) -> List[str]:
     candidates: List[str] = []
@@ -1137,11 +1156,14 @@ def build_support_candidates(
     factset_codes = lookup_support_codes_from_factset(
         fund_code,
         holding_type=holding_type,
+        fund_description=fund_description,
         factset_override=factset_override,
     )
 
+    series_suffix = infer_model_series_suffix(fund_description)
+    if series_suffix == "C" and derived:
+        candidates.append(derived)
     candidates.extend(factset_codes)
-
     if derived:
         candidates.append(derived)
 
@@ -1262,9 +1284,20 @@ def detect_factset_models(
         lookup_codes = build_support_candidates(
             holding["Fund Code"],
             holding.get("mandate_code"),
+            fund_description=holding.get("Fund Description"),
             factset_override=factset_override,
         )
-        matches = factset_table[factset_table["sales_charge_code"].isin(lookup_codes)].copy()
+        entered_code = normalize_code(holding["Fund Code"])
+        matches = factset_table[factset_table["sales_charge_code"] == entered_code].copy()
+        if matches.empty:
+            matches = factset_table[factset_table["sales_charge_code"].isin(lookup_codes)].copy()
+        series_suffix = infer_model_series_suffix(holding.get("Fund Description"))
+        if series_suffix and "factset_model_code" in matches.columns:
+            series_matches = matches[
+                matches["factset_model_code"].apply(lambda value: normalize_text(value).upper().endswith(f"_{series_suffix}"))
+            ].copy()
+            if not series_matches.empty:
+                matches = series_matches
         unique_models = sorted(model for model in matches["factset_model_code"].dropna().unique().tolist() if model)
         if not unique_models:
             warnings.append(
@@ -1859,11 +1892,13 @@ def parse_manual_holdings_input(
             build_support_candidates(
                 row["Fund Code"],
                 holding_type=row["saa_taa"],
+                fund_description=row["Fund Description"],
                 factset_override=factset_override,
             )[0]
             if build_support_candidates(
                 row["Fund Code"],
                 holding_type=row["saa_taa"],
+                fund_description=row["Fund Description"],
                 factset_override=factset_override,
             )
             else None
@@ -1884,13 +1919,6 @@ def parse_manual_holdings_input(
     if sma_count:
         messages["info"].append(
             f"Detected {sma_count} holding(s) with SMA fallback mapping. Those rows can be calculated from the bundled SMA asset-class reference when no support file is provided."
-        )
-
-    duplicate_codes = holdings.loc[holdings["support_code"].notna(), "support_code"]
-    duplicate_codes = duplicate_codes[duplicate_codes.duplicated()].unique().tolist()
-    if duplicate_codes:
-        messages["warnings"].append(
-            f"Duplicate support codes detected in holdings and will reuse the same support file: {', '.join(sorted(duplicate_codes))}."
         )
 
     holdings = holdings.reset_index(drop=True)
@@ -2426,6 +2454,7 @@ def resolve_support_file(
         holding["Fund Code"],
         holding.get("mandate_code"),
         holding.get("saa_taa"),
+        fund_description=holding.get("Fund Description"),
         factset_override=factset_override,
     )
     for code in candidates:
