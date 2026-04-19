@@ -541,6 +541,7 @@ DEFAULT_HOLDINGS_INPUT = pd.DataFrame(
 DRAFT_PATH = DATA_DIR / ".portfolio_composition_draft.json"
 HISTORY_PATH = DATA_DIR / ".portfolio_account_history.json"
 HISTORY_LIMIT = 50
+FACTSET_MODEL_COLUMNS = ["factset_model_code", "sales_charge_code", "mandate_code", "fund_legal_name", "saa_taa"]
 SMA_GROUPING_PATH = REFERENCE_DIR / "Asset Class Grouping For SMA.csv"
 SMA_GROUPING_NUMBERS_PATH = REFERENCE_DIR / "Asset Class Grouping For SMA.numbers"
 HOLDINGS_TEXT_TEMPLATE = ""
@@ -726,19 +727,12 @@ def load_reference_table_from_bytes(file_bytes: bytes, filename: str) -> pd.Data
         return pd.read_csv(BytesIO(file_bytes))
     if suffix in {".xlsx", ".xls", ".xlsm"}:
         return read_tabular_sheet(file_bytes, filename, sheet_name=0, header=0)
-    raise ValueError(f"Unsupported SMA override file type for `{filename}`.")
+    raise ValueError(f"Unsupported reference file type for `{filename}`.")
 
 
-@st.cache_data(show_spinner=False)
-def load_factset_model_codes() -> pd.DataFrame:
-    source_path = get_latest_reference_file("Get Factset Model Codes", [".csv", ".xlsx", ".xls", ".xlsm"])
-    if source_path is None:
-        source_path = get_latest_reference_file("Get Factset Model Codes", [".numbers"])
-    if source_path is None:
-        return pd.DataFrame(columns=["factset_model_code", "sales_charge_code", "mandate_code", "fund_legal_name", "saa_taa"])
-    table = load_reference_table(str(source_path))
+def normalize_factset_model_codes_table(table: pd.DataFrame) -> pd.DataFrame:
     if table.empty:
-        return pd.DataFrame(columns=["factset_model_code", "sales_charge_code", "mandate_code", "fund_legal_name", "saa_taa"])
+        return pd.DataFrame(columns=FACTSET_MODEL_COLUMNS)
 
     normalized = {col: normalize_header(col) for col in table.columns}
     rename_map = {}
@@ -754,8 +748,17 @@ def load_factset_model_codes() -> pd.DataFrame:
         elif key == "SAATAA":
             rename_map[col] = "saa_taa"
     table = table.rename(columns=rename_map)
-    keep_cols = ["factset_model_code", "sales_charge_code", "mandate_code", "fund_legal_name", "saa_taa"]
+
+    required_cols = {"factset_model_code", "sales_charge_code", "mandate_code"}
+    if not required_cols.issubset(set(table.columns)):
+        return pd.DataFrame(columns=FACTSET_MODEL_COLUMNS)
+
+    keep_cols = FACTSET_MODEL_COLUMNS
     table = table[[col for col in keep_cols if col in table.columns]].copy()
+    for column in keep_cols:
+        if column not in table.columns:
+            table[column] = ""
+
     if "sales_charge_code" in table.columns:
         table["sales_charge_code"] = table["sales_charge_code"].apply(normalize_code)
     if "mandate_code" in table.columns:
@@ -768,6 +771,21 @@ def load_factset_model_codes() -> pd.DataFrame:
         table["saa_taa"] = table["saa_taa"].apply(normalize_text).str.upper()
     table = table.dropna(subset=["factset_model_code", "sales_charge_code"]).copy()
     return table.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def load_factset_model_codes(override_bytes: Optional[bytes] = None, override_filename: str = "") -> pd.DataFrame:
+    if override_bytes:
+        table = load_reference_table_from_bytes(override_bytes, override_filename or "factset_model_codes.xlsx")
+        return normalize_factset_model_codes_table(table)
+
+    source_path = get_latest_reference_file("Get Factset Model Codes", [".csv", ".xlsx", ".xls", ".xlsm"])
+    if source_path is None:
+        source_path = get_latest_reference_file("Get Factset Model Codes", [".numbers"])
+    if source_path is None:
+        return pd.DataFrame(columns=FACTSET_MODEL_COLUMNS)
+    table = load_reference_table(str(source_path))
+    return normalize_factset_model_codes_table(table)
 
 
 @st.cache_data(show_spinner=False)
@@ -832,6 +850,42 @@ def get_sma_grouping_table(sma_override: Optional[dict] = None) -> pd.DataFrame:
             override_filename=sma_override["filename"],
         )
     return load_sma_grouping_table()
+
+
+def get_factset_model_table(factset_override: Optional[dict] = None) -> pd.DataFrame:
+    if factset_override:
+        return load_factset_model_codes(
+            override_bytes=factset_override["bytes"],
+            override_filename=factset_override["filename"],
+        )
+    return load_factset_model_codes()
+
+
+def validate_factset_model_file(record: dict) -> Tuple[bool, str]:
+    try:
+        table = get_factset_model_table(record)
+    except Exception as exc:
+        return False, f"FactSet model codes file could not be read: {exc}"
+    if table.empty:
+        return (
+            False,
+            "FactSet model codes file was ignored because it does not contain the required columns: FactSet Model Code, Sales Charge Code, and Mandate Code.",
+        )
+    return True, f"FactSet model codes loaded: {record['filename']} ({len(table):,} rows)."
+
+
+def validate_sma_grouping_file(record: dict) -> Tuple[bool, str]:
+    try:
+        table = get_sma_grouping_table(record)
+    except Exception as exc:
+        return False, f"SMA grouping file could not be read: {exc}"
+    required_cols = {"Fund Code", "Portfolio Composition", "Portfolio Breakdown"}
+    if table.empty or not required_cols.issubset(set(table.columns)):
+        return (
+            False,
+            "SMA grouping file was ignored because it does not contain the required columns: Fund Code, Portfolio Composition, and Portfolio Breakdown.",
+        )
+    return True, f"SMA grouping loaded: {record['filename']} ({len(table):,} rows)."
 
 
 def normalize_uploaded_record(uploaded: Optional[object]) -> Optional[dict]:
@@ -1043,12 +1097,16 @@ def derive_support_code_from_fund_code(fund_code: object) -> Optional[str]:
     return None
 
 
-def lookup_support_codes_from_factset(fund_code: object, holding_type: object = None) -> List[str]:
+def lookup_support_codes_from_factset(
+    fund_code: object,
+    holding_type: object = None,
+    factset_override: Optional[dict] = None,
+) -> List[str]:
     entered_code = normalize_code(fund_code)
     if not entered_code:
         return []
 
-    factset_table = load_factset_model_codes()
+    factset_table = get_factset_model_table(factset_override)
     if factset_table.empty or "sales_charge_code" not in factset_table.columns or "mandate_code" not in factset_table.columns:
         return []
 
@@ -1067,11 +1125,20 @@ def lookup_support_codes_from_factset(fund_code: object, holding_type: object = 
     return codes
 
 
-def build_support_candidates(fund_code: object, mandate_code: object = None, holding_type: object = None) -> List[str]:
+def build_support_candidates(
+    fund_code: object,
+    mandate_code: object = None,
+    holding_type: object = None,
+    factset_override: Optional[dict] = None,
+) -> List[str]:
     candidates: List[str] = []
     entered = extract_mandate_code(mandate_code)
     derived = derive_support_code_from_fund_code(fund_code)
-    factset_codes = lookup_support_codes_from_factset(fund_code, holding_type=holding_type)
+    factset_codes = lookup_support_codes_from_factset(
+        fund_code,
+        holding_type=holding_type,
+        factset_override=factset_override,
+    )
 
     candidates.extend(factset_codes)
 
@@ -1176,10 +1243,13 @@ def build_sma_rows(holding: pd.Series, sma_row: pd.Series) -> pd.DataFrame:
     )
 
 
-def detect_factset_models(holdings: pd.DataFrame) -> Tuple[List[dict], List[str], List[str]]:
+def detect_factset_models(
+    holdings: pd.DataFrame,
+    factset_override: Optional[dict] = None,
+) -> Tuple[List[dict], List[str], List[str]]:
     info: List[str] = []
     warnings: List[str] = []
-    factset_table = load_factset_model_codes()
+    factset_table = get_factset_model_table(factset_override)
     if factset_table.empty:
         return [], warnings, info
 
@@ -1189,7 +1259,11 @@ def detect_factset_models(holdings: pd.DataFrame) -> Tuple[List[dict], List[str]
 
     model_records: List[dict] = []
     for _, holding in taa_holdings.iterrows():
-        lookup_codes = build_support_candidates(holding["Fund Code"], holding.get("mandate_code"))
+        lookup_codes = build_support_candidates(
+            holding["Fund Code"],
+            holding.get("mandate_code"),
+            factset_override=factset_override,
+        )
         matches = factset_table[factset_table["sales_charge_code"].isin(lookup_codes)].copy()
         unique_models = sorted(model for model in matches["factset_model_code"].dropna().unique().tolist() if model)
         if not unique_models:
@@ -1227,19 +1301,20 @@ def detect_factset_models(holdings: pd.DataFrame) -> Tuple[List[dict], List[str]
     return model_records, warnings, info
 
 
-def load_draft_state() -> Tuple[pd.DataFrame, List[dict], Optional[dict]]:
+def load_draft_state() -> Tuple[pd.DataFrame, List[dict], Optional[dict], Optional[dict]]:
     if not DRAFT_PATH.exists():
-        return DEFAULT_HOLDINGS_INPUT.copy(), [], None
+        return DEFAULT_HOLDINGS_INPUT.copy(), [], None, None
 
     try:
         payload = json.loads(DRAFT_PATH.read_text())
     except Exception:
-        return DEFAULT_HOLDINGS_INPUT.copy(), [], None
+        return DEFAULT_HOLDINGS_INPUT.copy(), [], None, None
 
     holdings_records = payload.get("holdings", [])
     holdings_text = payload.get("holdings_text")
     support_records = payload.get("support_files", [])
     sma_override_record = payload.get("sma_override_file")
+    factset_override_record = payload.get("factset_model_file")
 
     if holdings_text:
         try:
@@ -1259,7 +1334,12 @@ def load_draft_state() -> Tuple[pd.DataFrame, List[dict], Optional[dict]]:
         if decoded:
             saved_support_files.append(decoded)
 
-    return holdings_df, saved_support_files, decode_saved_record(sma_override_record)
+    return (
+        holdings_df,
+        saved_support_files,
+        decode_saved_record(sma_override_record),
+        decode_saved_record(factset_override_record),
+    )
 
 
 def save_draft_state(
@@ -1267,6 +1347,7 @@ def save_draft_state(
     saved_support_files: List[dict],
     holdings_text: str,
     sma_override_file: Optional[dict],
+    factset_model_file: Optional[dict],
 ) -> None:
     payload = {
         "holdings": holdings_df.where(pd.notnull(holdings_df), None).to_dict("records"),
@@ -1277,6 +1358,7 @@ def save_draft_state(
             if encode_saved_record(item)
         ],
         "sma_override_file": encode_saved_record(sma_override_file),
+        "factset_model_file": encode_saved_record(factset_model_file),
     }
     DRAFT_PATH.write_text(json.dumps(payload))
 
@@ -1333,6 +1415,7 @@ def save_account_history_entry(
     holdings_df: pd.DataFrame,
     saved_support_files: List[dict],
     sma_override_file: Optional[dict],
+    factset_model_file: Optional[dict],
     results: dict,
 ) -> dict:
     created_at = datetime.now().isoformat(timespec="seconds")
@@ -1350,6 +1433,7 @@ def save_account_history_entry(
             if encoded
         ],
         "sma_override_file": encode_saved_record(sma_override_file),
+        "factset_model_file": encode_saved_record(factset_model_file),
     }
     entries = load_account_history()
     entries = [existing for existing in entries if existing.get("id") != entry["id"]]
@@ -1374,6 +1458,7 @@ def load_history_entry_into_session(entry: dict) -> None:
     st.session_state["holdings_paste_text"] = holdings_df_to_text(holdings_df)
     st.session_state["saved_support_files"] = support_files
     st.session_state["saved_sma_override_file"] = decode_saved_record(entry.get("sma_override_file"))
+    st.session_state["saved_factset_model_file"] = decode_saved_record(entry.get("factset_model_file"))
     st.session_state["account_label"] = normalize_text(entry.get("label"))
     st.session_state["pending_history_recalculate"] = True
     st.session_state["widget_reset_nonce"] = st.session_state.get("widget_reset_nonce", 0) + 1
@@ -1382,6 +1467,7 @@ def load_history_entry_into_session(entry: dict) -> None:
         support_files,
         st.session_state["holdings_paste_text"],
         st.session_state.get("saved_sma_override_file"),
+        st.session_state.get("saved_factset_model_file"),
     )
     clear_latest_calculation()
 
@@ -1466,6 +1552,100 @@ def infer_holding_type_from_description(description: object) -> str:
     return "SAA"
 
 
+def parse_holdings_tabular_export(holdings_text: str) -> Optional[pd.DataFrame]:
+    try:
+        table = pd.read_csv(
+            StringIO(holdings_text),
+            sep="\t",
+            header=None,
+            dtype=str,
+            engine="python",
+            keep_default_na=False,
+        )
+    except Exception:
+        return None
+    if table.empty or table.shape[1] < 2:
+        return None
+
+    header_idx: Optional[int] = None
+    code_col: Optional[int] = None
+    name_col: Optional[int] = None
+    mv_col: Optional[int] = None
+    type_col: Optional[int] = None
+    for row_idx, row in table.iterrows():
+        normalized_cells = [normalize_header(value) for value in row.tolist()]
+        if "FUNDCODE" not in normalized_cells:
+            continue
+        possible_code_col = normalized_cells.index("FUNDCODE")
+        possible_name_col = next(
+            (
+                idx
+                for idx, value in enumerate(normalized_cells)
+                if value in {"FUNDNAME", "FUNDDESCRIPTION", "FUNDDESC"}
+            ),
+            None,
+        )
+        possible_mv_col = next(
+            (
+                idx
+                for idx, value in enumerate(normalized_cells)
+                if value in {
+                    "TOTALMVCAD",
+                    "MARKETVALUECDN",
+                    "MARKETVALUECDNS",
+                    "MARKETVALUECAD",
+                    "MARKETVALUECADS",
+                    "MARKETVALUECDN",
+                }
+            ),
+            None,
+        )
+        possible_type_col = next(
+            (
+                idx
+                for idx, value in enumerate(normalized_cells)
+                if value in {"SAATAA", "TYPE", "HOLDINGTYPE"}
+            ),
+            None,
+        )
+        if possible_name_col is not None and possible_mv_col is not None:
+            header_idx = row_idx
+            code_col = possible_code_col
+            name_col = possible_name_col
+            mv_col = possible_mv_col
+            type_col = possible_type_col
+            break
+
+    if header_idx is None or code_col is None or name_col is None or mv_col is None:
+        return None
+
+    records: List[dict] = []
+    for _, row in table.iloc[header_idx + 1 :].iterrows():
+        cells = row.tolist()
+        line_text = " ".join(normalize_text(value) for value in cells if normalize_text(value))
+        if normalize_key(line_text).startswith("TOTAL "):
+            break
+
+        code = normalize_code(cells[code_col] if code_col < len(cells) else "")
+        description = normalize_text(cells[name_col] if name_col < len(cells) else "")
+        market_value = normalize_text(cells[mv_col] if mv_col < len(cells) else "")
+        explicit_type = normalize_holding_type(cells[type_col]) if type_col is not None and type_col < len(cells) else ""
+        if not code or not description or not market_value:
+            continue
+        records.append(
+            {
+                "Fund Code": code,
+                "Fund Description": description,
+                "Total MV (CAD)": market_value,
+                "saa_taa": explicit_type or infer_holding_type_from_description(description),
+            }
+        )
+
+    if not records:
+        return None
+    return pd.DataFrame(records, columns=MANUAL_HOLDINGS_COLUMNS)
+
+
 def parse_holdings_line_export(holdings_text: str) -> Optional[pd.DataFrame]:
     lines = [normalize_text(line) for line in holdings_text.splitlines()]
     lines = [line for line in lines if line]
@@ -1496,6 +1676,26 @@ def parse_holdings_line_export(holdings_text: str) -> Optional[pd.DataFrame]:
             continue
         if normalized.startswith(stop_prefixes):
             break
+
+        same_line_match = re.match(
+            r"^(?P<code>\d{4,6})\s+(?P<description>.+?)\s+(?P<market_value>[$€£]?\s*-?[\d,]+(?:\.\d+)?)\s*(?P<holding_type>SAA|TAA|SMA)?$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if same_line_match:
+            description = normalize_text(same_line_match.group("description"))
+            market_value = normalize_text(same_line_match.group("market_value"))
+            explicit_type = normalize_holding_type(same_line_match.group("holding_type"))
+            records.append(
+                {
+                    "Fund Code": normalize_code(same_line_match.group("code")) or same_line_match.group("code"),
+                    "Fund Description": description,
+                    "Total MV (CAD)": market_value,
+                    "saa_taa": explicit_type or infer_holding_type_from_description(description),
+                }
+            )
+            idx += 1
+            continue
 
         code = extract_mandate_code(line)
         if code is None:
@@ -1549,6 +1749,10 @@ def parse_holdings_text(holdings_text: str) -> pd.DataFrame:
     if not text:
         return pd.DataFrame(columns=MANUAL_HOLDINGS_COLUMNS)
 
+    tabular_export = parse_holdings_tabular_export(text)
+    if tabular_export is not None:
+        return clean_holdings_dataframe(tabular_export)
+
     line_export = parse_holdings_line_export(text)
     if line_export is not None:
         return clean_holdings_dataframe(line_export)
@@ -1586,6 +1790,7 @@ def parse_holdings_text(holdings_text: str) -> pd.DataFrame:
 def parse_manual_holdings_input(
     input_df: pd.DataFrame,
     sma_override: Optional[dict] = None,
+    factset_override: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, List[str]]]:
     if input_df is None:
         raise ValueError("Enter at least one holdings row before running the calculation.")
@@ -1651,8 +1856,16 @@ def parse_manual_holdings_input(
     holdings["allocation_bucket"] = holdings["saa_taa"].apply(allocation_bucket_for_holding_type)
     holdings["support_code"] = holdings.apply(
         lambda row: (
-            build_support_candidates(row["Fund Code"], holding_type=row["saa_taa"])[0]
-            if build_support_candidates(row["Fund Code"], holding_type=row["saa_taa"])
+            build_support_candidates(
+                row["Fund Code"],
+                holding_type=row["saa_taa"],
+                factset_override=factset_override,
+            )[0]
+            if build_support_candidates(
+                row["Fund Code"],
+                holding_type=row["saa_taa"],
+                factset_override=factset_override,
+            )
             else None
         ),
         axis=1,
@@ -2204,11 +2417,16 @@ def build_saved_support_map(saved_files: List[dict]) -> Tuple[Dict[str, dict], L
     return support_map, warnings
 
 
-def resolve_support_file(holding: pd.Series, support_map: Dict[str, dict]) -> Tuple[Optional[str], Optional[dict], List[str]]:
+def resolve_support_file(
+    holding: pd.Series,
+    support_map: Dict[str, dict],
+    factset_override: Optional[dict] = None,
+) -> Tuple[Optional[str], Optional[dict], List[str]]:
     candidates = build_support_candidates(
         holding["Fund Code"],
         holding.get("mandate_code"),
         holding.get("saa_taa"),
+        factset_override=factset_override,
     )
     for code in candidates:
         if code in support_map:
@@ -2220,6 +2438,7 @@ def calculate_reports(
     holdings: pd.DataFrame,
     support_map: Dict[str, dict],
     sma_override: Optional[dict] = None,
+    factset_override: Optional[dict] = None,
 ) -> Tuple[dict, List[str], List[str]]:
     warnings: List[str] = []
     info: List[str] = []
@@ -2229,7 +2448,11 @@ def calculate_reports(
     reporting_periods: set[str] = set()
 
     for _, holding in holdings.iterrows():
-        code, support_file, candidates = resolve_support_file(holding, support_map)
+        code, support_file, candidates = resolve_support_file(
+            holding,
+            support_map,
+            factset_override=factset_override,
+        )
         if support_file is None or code is None:
             sma_row = lookup_sma_row(holding["Fund Code"], sma_override=sma_override)
             if sma_row is not None:
@@ -2485,7 +2708,10 @@ def calculate_reports(
     if holdings["allocation_bucket"].eq("TAA").all():
         info.append("This is a TAA-only portfolio. Strategic values remain at 0.00%.")
 
-    factset_models, factset_warnings, factset_info = detect_factset_models(holdings)
+    factset_models, factset_warnings, factset_info = detect_factset_models(
+        holdings,
+        factset_override=factset_override,
+    )
     warnings.extend(factset_warnings)
     info.extend(factset_info)
 
@@ -3457,12 +3683,14 @@ def reset_holding_inputs(clear_files: bool = False, clear_draft: bool = False) -
     if clear_files:
         st.session_state["saved_support_files"] = []
         st.session_state["saved_sma_override_file"] = None
+        st.session_state["saved_factset_model_file"] = None
     for key in list(st.session_state.keys()):
-        if key.startswith("holding_") or key.startswith("support_files_uploader_") or key.startswith("sma_grouping_uploader_") or key.startswith("holdings_paste_area_") or key in {
+        if key.startswith("holding_") or key.startswith("support_files_uploader_") or key.startswith("sma_grouping_uploader_") or key.startswith("factset_model_uploader_") or key.startswith("holdings_paste_area_") or key in {
             "holdings_paste_area",
             "show_audit_view",
             "support_files_uploader",
             "sma_grouping_uploader",
+            "factset_model_uploader",
         }:
             del st.session_state[key]
 
@@ -3619,6 +3847,10 @@ def is_docs_route() -> bool:
         url = st.context.url
     except Exception:
         return False
+    if isinstance(url, bytes):
+        url = url.decode("utf-8", errors="ignore")
+    if not isinstance(url, str):
+        return False
     path = urlparse(url).path.rstrip("/")
     return path == "/docs"
 
@@ -3660,11 +3892,12 @@ st.markdown(
 st.warning("Use the correct support files for the entered holdings. Excel and CSV are supported.")
 
 if "draft_initialized" not in st.session_state:
-    draft_holdings, draft_support_files, draft_sma_override = load_draft_state()
+    draft_holdings, draft_support_files, draft_sma_override, draft_factset_override = load_draft_state()
     st.session_state["holdings_rows"] = pad_holding_rows(draft_holdings.to_dict("records"))
     st.session_state["holdings_paste_text"] = holdings_df_to_text(draft_holdings)
     st.session_state["saved_support_files"] = draft_support_files
     st.session_state["saved_sma_override_file"] = draft_sma_override
+    st.session_state["saved_factset_model_file"] = draft_factset_override
     st.session_state["draft_initialized"] = True
 if "widget_reset_nonce" not in st.session_state:
     st.session_state["widget_reset_nonce"] = 0
@@ -3681,6 +3914,28 @@ with st.sidebar:
         help="Upload either the needed support files directly or the monthly ZIP bundles. Excel, CSV, and ZIP are supported.",
     )
     with st.expander("Advanced"):
+        factset_model_upload = st.file_uploader(
+            "FactSet Model Codes File",
+            type=["xlsx", "xls", "xlsm", "csv"],
+            accept_multiple_files=False,
+            key=f"factset_model_uploader_{widget_nonce}",
+            help="Optional. Upload the latest Get FactSet Model Codes file to map client TAA fund codes to support-file mandate codes. If omitted, the built-in reference is used.",
+        )
+        if factset_model_upload is not None:
+            uploaded_factset = normalize_uploaded_record(factset_model_upload)
+            is_valid, message = validate_factset_model_file(uploaded_factset)
+            if is_valid:
+                st.session_state["saved_factset_model_file"] = uploaded_factset
+                st.success(message)
+            else:
+                st.session_state["saved_factset_model_file"] = None
+                st.warning(message)
+        if st.session_state.get("saved_factset_model_file"):
+            if st.button("Use Built-In FactSet Codes", width="stretch", key="clear_factset_model_file"):
+                st.session_state["saved_factset_model_file"] = None
+                st.session_state["widget_reset_nonce"] = st.session_state.get("widget_reset_nonce", 0) + 1
+                st.rerun()
+
         sma_override_upload = st.file_uploader(
             "SMA Grouping File",
             type=["xlsx", "xls", "xlsm", "csv"],
@@ -3689,15 +3944,29 @@ with st.sidebar:
             help="Optional. Only upload this when you need to update the built-in SMA grouping reference.",
         )
         if sma_override_upload is not None:
-            if "sma" in sma_override_upload.name.lower():
-                st.session_state["saved_sma_override_file"] = normalize_uploaded_record(sma_override_upload)
+            uploaded_sma = normalize_uploaded_record(sma_override_upload)
+            is_valid, message = validate_sma_grouping_file(uploaded_sma)
+            if is_valid:
+                st.session_state["saved_sma_override_file"] = uploaded_sma
+                st.success(message)
             else:
-                st.warning("SMA grouping file ignored because the filename does not contain `SMA`.")
+                st.session_state["saved_sma_override_file"] = None
+                st.warning(message)
+        if st.session_state.get("saved_sma_override_file"):
+            if st.button("Use Built-In SMA Grouping", width="stretch", key="clear_sma_grouping_file"):
+                st.session_state["saved_sma_override_file"] = None
+                st.session_state["widget_reset_nonce"] = st.session_state.get("widget_reset_nonce", 0) + 1
+                st.rerun()
     if st.button("Reset Saved Draft", width="stretch"):
         reset_holding_inputs(clear_files=True, clear_draft=True)
         st.rerun()
 
+    active_factset_override = st.session_state.get("saved_factset_model_file")
     active_sma_override = st.session_state.get("saved_sma_override_file")
+    if active_factset_override:
+        st.caption(f"FactSet model codes: `{active_factset_override['filename']}`")
+    else:
+        st.caption("FactSet model codes: built-in reference")
     if active_sma_override:
         st.caption(f"SMA grouping: `{active_sma_override['filename']}`")
     else:
@@ -3840,17 +4109,21 @@ save_draft_state(
     st.session_state.get("saved_support_files", []),
     st.session_state.get("holdings_paste_text", HOLDINGS_TEXT_TEMPLATE),
     st.session_state.get("saved_sma_override_file"),
+    st.session_state.get("saved_factset_model_file"),
 )
 
 active_support_files = st.session_state.get("saved_support_files", [])
+active_factset_override = st.session_state.get("saved_factset_model_file")
 active_sma_override = st.session_state.get("saved_sma_override_file")
 should_run_calculation = run_calculation or st.session_state.pop("pending_history_recalculate", False)
 
-if active_support_files or active_sma_override:
+if active_support_files or active_sma_override or active_factset_override:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Files Selected")
     for saved in active_support_files:
         st.write(f"- `{saved['filename']}`")
+    if active_factset_override:
+        st.write(f"- FactSet model codes: `{active_factset_override['filename']}`")
     if active_sma_override:
         st.write(f"- SMA grouping: `{active_sma_override['filename']}`")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -3868,6 +4141,7 @@ if should_run_calculation:
         holdings_df, holdings_messages = parse_manual_holdings_input(
             current_holdings_df,
             sma_override=active_sma_override,
+            factset_override=active_factset_override,
         )
         progress.progress(20)
 
@@ -3880,6 +4154,7 @@ if should_run_calculation:
             holdings_df,
             support_map,
             sma_override=active_sma_override,
+            factset_override=active_factset_override,
         )
         progress.progress(70)
 
@@ -3911,6 +4186,7 @@ if should_run_calculation:
                 holdings_df,
                 active_support_files,
                 active_sma_override,
+                active_factset_override,
                 results,
             )
         status.empty()
