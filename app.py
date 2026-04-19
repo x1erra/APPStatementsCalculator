@@ -4140,6 +4140,19 @@ st.markdown(
         border-radius: 16px;
         background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     }
+    div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #2563eb 0%, #0f766e 100%);
+        border: 0;
+        color: #ffffff;
+    }
+    div[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #1d4ed8 0%, #0f766e 100%);
+        border: 0;
+        color: #ffffff;
+    }
+    div[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+        color: #9ca3af;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -4175,13 +4188,18 @@ widget_nonce = st.session_state["widget_reset_nonce"]
 with st.sidebar:
     st.header("Support Files")
     support_files = st.file_uploader(
-        "Upload Support Files (typically 5 files)",
+        "Support files",
         type=["xlsx", "xls", "xlsm", "csv", "zip"],
         accept_multiple_files=True,
         key=f"support_files_uploader_{widget_nonce}",
-        help="Upload either the needed support files directly or the monthly ZIP bundles. Excel, CSV, and ZIP are supported.",
+        help="Upload the monthly ZIP bundles or the needed support files directly.",
     )
+
+    active_factset_override = st.session_state.get("saved_factset_model_file")
+    active_sma_override = st.session_state.get("saved_sma_override_file")
+
     with st.expander("Advanced"):
+        st.caption("Optional reference files. Built-in references are used when these are blank.")
         factset_model_upload = st.file_uploader(
             "FactSet Model Codes File",
             type=["xlsx", "xls", "xlsm", "csv"],
@@ -4225,21 +4243,22 @@ with st.sidebar:
                 st.session_state["saved_sma_override_file"] = None
                 st.session_state["widget_reset_nonce"] = st.session_state.get("widget_reset_nonce", 0) + 1
                 st.rerun()
-    if st.button("Reset Saved Draft", width="stretch"):
-        reset_holding_inputs(clear_files=True, clear_draft=True)
-        st.rerun()
 
-    active_factset_override = st.session_state.get("saved_factset_model_file")
-    active_sma_override = st.session_state.get("saved_sma_override_file")
-    if active_factset_override:
-        st.caption(f"FactSet model codes: `{active_factset_override['filename']}`")
-    else:
-        st.caption("FactSet model codes: built-in reference")
-    if active_sma_override:
-        st.caption(f"SMA grouping: `{active_sma_override['filename']}`")
-    else:
-        st.caption("SMA grouping: default reference")
-    st.caption("Entries and files are saved locally, so refresh will not clear your work.")
+        st.markdown("**Active references**")
+        st.caption(
+            f"FactSet: `{active_factset_override['filename']}`"
+            if active_factset_override
+            else "FactSet: built-in"
+        )
+        st.caption(
+            f"SMA grouping: `{active_sma_override['filename']}`"
+            if active_sma_override
+            else "SMA grouping: built-in"
+        )
+        if st.button("Reset Draft and Files", width="stretch", key="reset_saved_draft"):
+            reset_holding_inputs(clear_files=True, clear_draft=True)
+            st.rerun()
+
     run_calculation = st.button(
         "Run Calculation",
         type="primary",
