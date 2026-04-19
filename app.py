@@ -4140,16 +4140,19 @@ st.markdown(
         border-radius: 16px;
         background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     }
+    div[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"],
     div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
         background: linear-gradient(135deg, #2563eb 0%, #0f766e 100%) !important;
         border: 0 !important;
         color: #ffffff !important;
     }
+    div[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]:hover,
     div[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
         background: linear-gradient(135deg, #1d4ed8 0%, #0f766e 100%) !important;
         border: 0 !important;
         color: #ffffff !important;
     }
+    div[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]:focus,
     div[data-testid="stSidebar"] .stButton > button[kind="primary"]:focus {
         box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25) !important;
         color: #ffffff !important;

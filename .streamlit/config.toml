@@ -5,3 +5,6 @@ enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+primaryColor = "#2563EB"
