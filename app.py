@@ -1529,11 +1529,44 @@ def format_history_entry(entry: dict) -> str:
     label = normalize_text(entry.get("label")) or "Untitled portfolio"
     created_at = normalize_text(entry.get("created_at"))
     total_mv = entry.get("portfolio_total")
-    total_text = ""
+    total_text = "Unknown MV"
     if isinstance(total_mv, (int, float)):
-        total_text = f" - {format_currency(float(total_mv))}"
-    date_text = created_at[:16].replace("T", " ") if created_at else ""
-    return f"{label}{total_text} ({date_text})" if date_text else f"{label}{total_text}"
+        total_text = format_currency(float(total_mv))
+    date_text = created_at[:16].replace("T", " ") if created_at else "No date"
+    holdings_count = len(entry.get("holdings", []) or [])
+    return f"{date_text} | {total_text} | {label} | {holdings_count} holdings"
+
+
+def format_history_entry_details(entry: dict) -> str:
+    label = normalize_text(entry.get("label")) or "Untitled portfolio"
+    created_at = normalize_text(entry.get("created_at"))
+    total_mv = entry.get("portfolio_total")
+    total_text = format_currency(float(total_mv)) if isinstance(total_mv, (int, float)) else "Unknown"
+    holdings = entry.get("holdings", []) or []
+    support_files = entry.get("support_files", []) or []
+    models = []
+    for model in entry.get("factset_models", []) or []:
+        model_name = normalize_text(model.get("FactSet Model") if isinstance(model, dict) else model)
+        if model_name:
+            models.append(model_name)
+    model_text = ", ".join(models) if models else "No model detected"
+    date_text = created_at.replace("T", " ") if created_at else "No saved date"
+    codes = [
+        normalize_text(row.get("Fund Code"))
+        for row in holdings
+        if isinstance(row, dict) and normalize_text(row.get("Fund Code"))
+    ]
+    codes_text = ", ".join(codes[:8])
+    if len(codes) > 8:
+        codes_text += f", +{len(codes) - 8} more"
+    return (
+        f"Saved: {date_text}\n\n"
+        f"Label: {label}\n\n"
+        f"Market value: {total_text}\n\n"
+        f"Model: {model_text}\n\n"
+        f"Holdings: {len(holdings)} ({codes_text or 'none'})\n\n"
+        f"Files: {len(support_files)}"
+    )
 
 
 def build_default_history_label(results: dict) -> str:
@@ -3270,7 +3303,7 @@ def build_diversification_chart(df: pd.DataFrame) -> go.Figure:
             automargin=True,
             tickfont=dict(color="#111827", size=17),
             categoryorder="array",
-            categoryarray=categories,
+            categoryarray=list(reversed(categories)),
         ),
         uniformtext=dict(minsize=12, mode="hide"),
     )
@@ -4215,6 +4248,7 @@ with st.sidebar:
             )
             selected_entry = history_entries[selected_history_index]
             selected_history_id = selected_entry.get("id")
+            st.caption(format_history_entry_details(selected_entry))
             hist_col1, hist_col2 = st.columns(2)
             if hist_col1.button("Load", width="stretch", key="load_history_entry"):
                 if selected_entry:
