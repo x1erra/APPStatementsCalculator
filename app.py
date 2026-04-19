@@ -1194,6 +1194,63 @@ def lookup_sma_row(fund_code: object, sma_override: Optional[dict] = None) -> Op
     return matches.iloc[0]
 
 
+def infer_sma_row_from_description(fund_code: object, description: object) -> Optional[pd.Series]:
+    text = normalize_key(description)
+    if "PRIVATE MARKETS" in text or "PRIVATE MARKET" in text:
+        return pd.Series(
+            {
+                "Fund Code": normalize_code(fund_code) or normalize_text(fund_code),
+                "Sales Charge Code.Legal Name": normalize_text(description),
+                "Portfolio Composition": "Private Alt",
+                "Portfolio Breakdown": "Alternatives",
+                "Portfolio AAbA": "Alternatives",
+            }
+        )
+    if "HIGH INTEREST SAVINGS" in text:
+        return pd.Series(
+            {
+                "Fund Code": normalize_code(fund_code) or normalize_text(fund_code),
+                "Sales Charge Code.Legal Name": normalize_text(description),
+                "Portfolio Composition": "Cash",
+                "Portfolio Breakdown": "Cash",
+                "Portfolio AAbA": "Income (Incl. Cash)",
+            }
+        )
+    if "ENHANCED SHORT DURATION BOND" in text:
+        return pd.Series(
+            {
+                "Fund Code": normalize_code(fund_code) or normalize_text(fund_code),
+                "Sales Charge Code.Legal Name": normalize_text(description),
+                "Portfolio Composition": "Income",
+                "Portfolio Breakdown": "Income",
+                "Portfolio AAbA": "Income (Incl. Cash)",
+            }
+        )
+    if "SELECT INCOME MANAGED" in text:
+        return pd.Series(
+            {
+                "Fund Code": normalize_code(fund_code) or normalize_text(fund_code),
+                "Sales Charge Code.Legal Name": normalize_text(description),
+                "Portfolio Composition": "Balanced",
+                "Portfolio Breakdown": "Income",
+                "Portfolio AAbA": "Balanced",
+            }
+        )
+    return None
+
+
+def get_sma_row_for_holding(holding: pd.Series, sma_override: Optional[dict] = None) -> Optional[pd.Series]:
+    row = lookup_sma_row(holding.get("Fund Code"), sma_override=sma_override)
+    if row is not None:
+        return row
+    if normalize_holding_type(holding.get("saa_taa")) != "SMA":
+        return None
+    return infer_sma_row_from_description(
+        holding.get("Fund Code"),
+        holding.get("Fund Description"),
+    )
+
+
 def map_sma_composition_group(portfolio_composition: object, portfolio_breakdown: object) -> str:
     composition = normalize_key(portfolio_composition)
 
@@ -1966,7 +2023,7 @@ def parse_manual_holdings_input(
         axis=1,
     )
     holdings["has_sma_mapping"] = holdings.apply(
-        lambda row: row["support_code"] is None and lookup_sma_row(row["Fund Code"], sma_override=sma_override) is not None,
+        lambda row: pd.isna(row["support_code"]) and get_sma_row_for_holding(row, sma_override=sma_override) is not None,
         axis=1,
     )
     unresolved_support_rows = holdings[holdings["support_code"].isna() & ~holdings["has_sma_mapping"]]
@@ -2543,7 +2600,7 @@ def calculate_reports(
             factset_override=factset_override,
         )
         if support_file is None or code is None:
-            sma_row = lookup_sma_row(holding["Fund Code"], sma_override=sma_override)
+            sma_row = get_sma_row_for_holding(holding, sma_override=sma_override)
             if sma_row is not None:
                 blocks.append(build_sma_rows(holding, sma_row))
                 continue
