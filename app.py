@@ -1582,6 +1582,8 @@ def infer_holding_type_from_description(description: object) -> str:
     text = normalize_key(description)
     if "TACTICAL ASSET ALLOCATION" in text or " TAA " in f" {text} ":
         return "TAA"
+    if " SMA " in f" {text} ":
+        return "SMA"
     return "SAA"
 
 
@@ -1668,10 +1670,22 @@ def parse_holdings_tabular_export(holdings_text: str) -> Optional[pd.DataFrame]:
                     "MARKETVALUECAD",
                     "MARKETVALUECADS",
                     "MARKETVALUECDN",
+                    "MARKETVALUEC",
+                    "MARKETVALUECA",
+                    "MARKETVALUECADOLLAR",
+                    "MARKETVALUECDNDOLLAR",
                 }
             ),
             None,
         )
+        if possible_mv_col is None:
+            generic_mv_cols = [
+                idx
+                for idx, value in enumerate(normalized_cells)
+                if value in {"MARKETVALUE", "TOTALMV", "MARKETVAL"}
+            ]
+            if generic_mv_cols:
+                possible_mv_col = generic_mv_cols[-1]
         possible_type_col = next(
             (
                 idx
@@ -1734,6 +1748,10 @@ def parse_holdings_line_export(holdings_text: str) -> Optional[pd.DataFrame]:
         "MARKET VALUE CAD$",
         "MARKET VALUE (CAD)",
         "MARKET VALUE CAD",
+        "MARKET VALUE C$",
+        "MARKET VALUE CA$",
+        "MARKET VALUE CDN",
+        "MARKET VALUE CAD",
     }
     stop_prefixes = ("TOTAL ",)
 
@@ -1747,7 +1765,8 @@ def parse_holdings_line_export(holdings_text: str) -> Optional[pd.DataFrame]:
             idx += 1
             continue
         if normalized.startswith(stop_prefixes):
-            break
+            idx += 1
+            continue
 
         same_line_match = re.match(
             r"^(?P<code>\d{4,6})\s+(?P<description>.+?)\s+(?P<market_value>[$€£]?\s*-?[\d,]+(?:\.\d+)?)\s*(?P<holding_type>SAA|TAA|SMA)?$",
@@ -1769,13 +1788,13 @@ def parse_holdings_line_export(holdings_text: str) -> Optional[pd.DataFrame]:
             idx += 1
             continue
 
-        code = extract_mandate_code(line)
+        code = normalize_code(line) if re.fullmatch(r"\d{4,6}", line) else None
         if code is None:
             idx += 1
             continue
 
         description = ""
-        market_value = ""
+        market_values: List[str] = []
         cursor = idx + 1
         while cursor < len(lines):
             candidate = lines[cursor]
@@ -1785,18 +1804,20 @@ def parse_holdings_line_export(holdings_text: str) -> Optional[pd.DataFrame]:
                 continue
             if candidate_normalized.startswith(stop_prefixes):
                 break
-            if extract_mandate_code(candidate) is not None:
+            if extract_mandate_code(candidate) is not None or re.fullmatch(r"\d{4,6}", candidate):
                 break
             if description == "":
                 description = candidate
                 cursor += 1
                 continue
             if re.search(r"[$€£]?\s*-?[\d,]+(?:\.\d+)?", candidate):
-                market_value = candidate
+                if not candidate.strip().startswith("@"):
+                    market_values.append(candidate)
                 cursor += 1
-                break
+                continue
             cursor += 1
 
+        market_value = market_values[-1] if market_values else ""
         if description and market_value:
             records.append(
                 {
