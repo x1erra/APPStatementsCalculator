@@ -1649,6 +1649,20 @@ def delete_history_entry(entry_id: str) -> None:
     save_account_history(entries)
 
 
+def queue_history_entry_load(entry_id: str) -> None:
+    st.session_state["pending_history_load_id"] = entry_id
+
+
+def apply_queued_history_entry_load() -> None:
+    entry_id = st.session_state.pop("pending_history_load_id", None)
+    if not entry_id:
+        return
+    for entry in load_account_history():
+        if entry.get("id") == entry_id:
+            load_history_entry_into_session(entry)
+            return
+
+
 def blank_holding_row() -> dict:
     return {
         "Fund Code": "",
@@ -4154,6 +4168,8 @@ if "draft_initialized" not in st.session_state:
 if "widget_reset_nonce" not in st.session_state:
     st.session_state["widget_reset_nonce"] = 0
 
+apply_queued_history_entry_load()
+
 widget_nonce = st.session_state["widget_reset_nonce"]
 
 with st.sidebar:
@@ -4252,7 +4268,7 @@ with st.sidebar:
             hist_col1, hist_col2 = st.columns(2)
             if hist_col1.button("Load", width="stretch", key="load_history_entry"):
                 if selected_entry:
-                    load_history_entry_into_session(selected_entry)
+                    queue_history_entry_load(selected_history_id)
                     st.rerun()
             if hist_col2.button("Delete", width="stretch", key="delete_history_entry"):
                 delete_history_entry(selected_history_id)
