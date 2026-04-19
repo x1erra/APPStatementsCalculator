@@ -9,8 +9,11 @@ services:
       - "8501:8501"
     environment:
       TZ: America/Toronto
+      APP_DATA_DIR: /app/data
       STREAMLIT_SERVER_HEADLESS: "true"
       STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    volumes:
+      - app_data:/app/data
 
     # Future expansion:
     # Add more apps as separate services with different host ports, for example:
@@ -39,3 +42,7 @@ services:
     #
     # For future services, keep this cloudflared container and add more
     # public hostnames in the Cloudflare dashboard pointing to other local ports.
+
+volumes:
+  app_data:
+    # Stores draft inputs and saved account history across container rebuilds.

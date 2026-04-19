@@ -3,10 +3,14 @@ from io import BytesIO
 from io import StringIO
 import base64
 import json
+import os
 import re
 import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
+from uuid import uuid4
 from zipfile import ZipFile
 
 import pandas as pd
@@ -520,6 +524,8 @@ PRIMARY_BLUE = "#25356B"
 SECONDARY_GRAY = "#9C9CA6"
 BASE_DIR = Path(__file__).resolve().parent
 REFERENCE_DIR = BASE_DIR / "Reference"
+DATA_DIR = Path(os.environ.get("APP_DATA_DIR", BASE_DIR))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 MANUAL_HOLDINGS_COLUMNS = ["Fund Code", "Fund Description", "Total MV (CAD)", "saa_taa"]
 HOLDING_TYPE_OPTIONS = ["SAA", "TAA", "SMA"]
 DEFAULT_HOLDINGS_INPUT = pd.DataFrame(
@@ -532,7 +538,9 @@ DEFAULT_HOLDINGS_INPUT = pd.DataFrame(
         }
     ]
 )
-DRAFT_PATH = BASE_DIR / ".portfolio_composition_draft.json"
+DRAFT_PATH = DATA_DIR / ".portfolio_composition_draft.json"
+HISTORY_PATH = DATA_DIR / ".portfolio_account_history.json"
+HISTORY_LIMIT = 50
 SMA_GROUPING_PATH = REFERENCE_DIR / "Asset Class Grouping For SMA.csv"
 SMA_GROUPING_NUMBERS_PATH = REFERENCE_DIR / "Asset Class Grouping For SMA.numbers"
 HOLDINGS_TEXT_TEMPLATE = ""
@@ -1276,6 +1284,111 @@ def save_draft_state(
 def clear_draft_state() -> None:
     if DRAFT_PATH.exists():
         DRAFT_PATH.unlink()
+
+
+def load_account_history() -> List[dict]:
+    if not HISTORY_PATH.exists():
+        return []
+    try:
+        payload = json.loads(HISTORY_PATH.read_text())
+    except Exception:
+        return []
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list):
+        return []
+    return entries
+
+
+def save_account_history(entries: List[dict]) -> None:
+    safe_entries = entries[:HISTORY_LIMIT]
+    HISTORY_PATH.write_text(json.dumps({"entries": safe_entries}))
+
+
+def format_history_entry(entry: dict) -> str:
+    label = normalize_text(entry.get("label")) or "Untitled portfolio"
+    created_at = normalize_text(entry.get("created_at"))
+    total_mv = entry.get("portfolio_total")
+    total_text = ""
+    if isinstance(total_mv, (int, float)):
+        total_text = f" - {format_currency(float(total_mv))}"
+    date_text = created_at[:16].replace("T", " ") if created_at else ""
+    return f"{label}{total_text} ({date_text})" if date_text else f"{label}{total_text}"
+
+
+def build_default_history_label(results: dict) -> str:
+    factset_models = results.get("factset_models", [])
+    if factset_models:
+        model = normalize_text(factset_models[0].get("FactSet Model"))
+        if model:
+            return f"{model} portfolio"
+    holdings = results.get("holdings")
+    if isinstance(holdings, pd.DataFrame) and not holdings.empty:
+        fund_codes = ", ".join(holdings["Fund Code"].astype(str).head(3).tolist())
+        return f"Portfolio {fund_codes}"
+    return "Portfolio calculation"
+
+
+def save_account_history_entry(
+    label: str,
+    holdings_df: pd.DataFrame,
+    saved_support_files: List[dict],
+    sma_override_file: Optional[dict],
+    results: dict,
+) -> dict:
+    created_at = datetime.now().isoformat(timespec="seconds")
+    clean_label = normalize_text(label) or build_default_history_label(results)
+    entry = {
+        "id": uuid4().hex,
+        "created_at": created_at,
+        "label": clean_label,
+        "portfolio_total": float(results.get("portfolio_total", 0.0)),
+        "factset_models": results.get("factset_models", []),
+        "holdings": holdings_df.where(pd.notnull(holdings_df), None).to_dict("records"),
+        "support_files": [
+            encoded
+            for encoded in (encode_saved_record(item) for item in saved_support_files)
+            if encoded
+        ],
+        "sma_override_file": encode_saved_record(sma_override_file),
+    }
+    entries = load_account_history()
+    entries = [existing for existing in entries if existing.get("id") != entry["id"]]
+    entries.insert(0, entry)
+    save_account_history(entries)
+    return entry
+
+
+def load_history_entry_into_session(entry: dict) -> None:
+    holdings_records = entry.get("holdings", [])
+    holdings_df = pd.DataFrame(holdings_records) if holdings_records else DEFAULT_HOLDINGS_INPUT.copy()
+    for column in MANUAL_HOLDINGS_COLUMNS:
+        if column not in holdings_df.columns:
+            holdings_df[column] = DEFAULT_HOLDINGS_INPUT.iloc[0].get(column, "")
+    holdings_df = holdings_df[MANUAL_HOLDINGS_COLUMNS].copy()
+    support_files = [
+        decoded
+        for decoded in (decode_saved_record(record) for record in entry.get("support_files", []))
+        if decoded
+    ]
+    st.session_state["holdings_rows"] = pad_holding_rows(holdings_df.to_dict("records"))
+    st.session_state["holdings_paste_text"] = holdings_df_to_text(holdings_df)
+    st.session_state["saved_support_files"] = support_files
+    st.session_state["saved_sma_override_file"] = decode_saved_record(entry.get("sma_override_file"))
+    st.session_state["account_label"] = normalize_text(entry.get("label"))
+    st.session_state["pending_history_recalculate"] = True
+    st.session_state["widget_reset_nonce"] = st.session_state.get("widget_reset_nonce", 0) + 1
+    save_draft_state(
+        strip_blank_holding_rows(holdings_df),
+        support_files,
+        st.session_state["holdings_paste_text"],
+        st.session_state.get("saved_sma_override_file"),
+    )
+    clear_latest_calculation()
+
+
+def delete_history_entry(entry_id: str) -> None:
+    entries = [entry for entry in load_account_history() if entry.get("id") != entry_id]
+    save_account_history(entries)
 
 
 def blank_holding_row() -> dict:
@@ -3501,6 +3614,15 @@ def render_calculation_results(calculation_state: dict) -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def is_docs_route() -> bool:
+    try:
+        url = st.context.url
+    except Exception:
+        return False
+    path = urlparse(url).path.rstrip("/")
+    return path == "/docs"
+
+
 st.markdown(
     """
     <style>
@@ -3525,17 +3647,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if is_docs_route():
+    st.title("APP Look-Thru Reporting Manual")
+    st.markdown(MANUAL_TEXT)
+    st.stop()
+
 st.title("APP Look-Thru Reporting")
 st.markdown(
     '<div class="app-subtitle">Portfolio Composition and Portfolio Breakdown.</div>',
     unsafe_allow_html=True,
 )
-st.warning(
-    "Use the correct support files for the entered holdings. Excel and CSV are supported."
-)
-
-with st.expander("APP Look-Thru Reporting Manual"):
-    st.markdown(MANUAL_TEXT)
+st.warning("Use the correct support files for the entered holdings. Excel and CSV are supported.")
 
 if "draft_initialized" not in st.session_state:
     draft_holdings, draft_support_files, draft_sma_override = load_draft_state()
@@ -3587,6 +3709,34 @@ with st.sidebar:
         width="stretch",
         disabled=False,
     )
+    st.text_input(
+        "Account label",
+        key="account_label",
+        placeholder="Optional name for saved history",
+        help="Successful manual calculations are saved to history using this label. Leave blank to auto-name from the detected model.",
+    )
+    with st.expander("Saved Accounts"):
+        history_entries = load_account_history()
+        if history_entries:
+            selected_history_index = st.selectbox(
+                "Historical calculations",
+                options=list(range(len(history_entries))),
+                format_func=lambda index: format_history_entry(history_entries[index]),
+                label_visibility="collapsed",
+                key="history_entry_select",
+            )
+            selected_entry = history_entries[selected_history_index]
+            selected_history_id = selected_entry.get("id")
+            hist_col1, hist_col2 = st.columns(2)
+            if hist_col1.button("Load", width="stretch", key="load_history_entry"):
+                if selected_entry:
+                    load_history_entry_into_session(selected_entry)
+                    st.rerun()
+            if hist_col2.button("Delete", width="stretch", key="delete_history_entry"):
+                delete_history_entry(selected_history_id)
+                st.rerun()
+        else:
+            st.caption("No saved account history yet.")
 
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
 st.subheader("Enter Holdings")
@@ -3694,6 +3844,7 @@ save_draft_state(
 
 active_support_files = st.session_state.get("saved_support_files", [])
 active_sma_override = st.session_state.get("saved_sma_override_file")
+should_run_calculation = run_calculation or st.session_state.pop("pending_history_recalculate", False)
 
 if active_support_files or active_sma_override:
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -3701,13 +3852,13 @@ if active_support_files or active_sma_override:
     for saved in active_support_files:
         st.write(f"- `{saved['filename']}`")
     if active_sma_override:
-        st.write(f"- SMA override: `{active_sma_override['filename']}`")
+        st.write(f"- SMA grouping: `{active_sma_override['filename']}`")
     st.markdown("</div>", unsafe_allow_html=True)
-elif not run_calculation:
+elif not should_run_calculation:
     if CALCULATION_SESSION_KEY not in st.session_state:
         st.info("Enter holdings, upload the required files, then click `Run Calculation`.")
 
-if run_calculation:
+if should_run_calculation:
     progress = st.progress(0)
     status = st.empty()
     clear_latest_calculation()
@@ -3754,6 +3905,14 @@ if run_calculation:
 
         all_warnings = holdings_messages["warnings"] + upload_warnings + calc_warnings
         store_latest_calculation(results, all_warnings, excel_bytes)
+        if run_calculation:
+            save_account_history_entry(
+                st.session_state.get("account_label", ""),
+                holdings_df,
+                active_support_files,
+                active_sma_override,
+                results,
+            )
         status.empty()
         progress.empty()
 

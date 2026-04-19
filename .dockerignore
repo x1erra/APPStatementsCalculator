@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+data/
 .portfolio_composition_draft.json
 
 # Keep the deploy image small and avoid baking monthly client/report inputs into it.

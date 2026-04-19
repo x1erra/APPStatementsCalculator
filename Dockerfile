@@ -43,6 +43,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY . .
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/data \
     && chown -R appuser:appuser /app
 
 USER appuser
