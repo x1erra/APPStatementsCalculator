@@ -1585,6 +1585,45 @@ def infer_holding_type_from_description(description: object) -> str:
     return "SAA"
 
 
+def is_managed_portfolio_support_holding(description: object) -> bool:
+    text = f" {normalize_key(description)} "
+    if " TACTICAL ASSET ALLOCATION " in text:
+        return False
+    if " APP " in text:
+        return False
+    return " MANAGED POOL " in text or " MANAGED CLASS " in text
+
+
+def apply_sma_type_detection(df: pd.DataFrame, sma_override: Optional[dict] = None) -> pd.DataFrame:
+    """Mark pasted holdings as SMA when their fund code exists in the SMA reference."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=MANUAL_HOLDINGS_COLUMNS)
+
+    detected = clean_holdings_dataframe(df)
+    try:
+        sma_table = get_sma_grouping_table(sma_override)
+    except Exception:
+        return detected
+
+    if sma_table.empty or "Fund Code" not in sma_table.columns:
+        return detected
+
+    sma_codes = {
+        code
+        for code in sma_table["Fund Code"].apply(normalize_code).tolist()
+        if code
+    }
+    if not sma_codes:
+        return detected
+
+    fund_codes = detected["Fund Code"].apply(normalize_code)
+    current_types = detected["saa_taa"].apply(normalize_holding_type)
+    managed_portfolio_mask = detected["Fund Description"].apply(is_managed_portfolio_support_holding)
+    sma_mask = fund_codes.isin(sma_codes) & current_types.ne("TAA") & ~managed_portfolio_mask
+    detected.loc[sma_mask, "saa_taa"] = "SMA"
+    return detected
+
+
 def parse_holdings_tabular_export(holdings_text: str) -> Optional[pd.DataFrame]:
     try:
         table = pd.read_csv(
@@ -4063,6 +4102,10 @@ pasted_text = st.text_area(
 paste_col1, _ = st.columns([1.2, 4.8])
 if paste_col1.button("Import Pasted Rows", width="stretch"):
     imported_df = parse_holdings_text(pasted_text)
+    imported_df = apply_sma_type_detection(
+        imported_df,
+        sma_override=st.session_state.get("saved_sma_override_file"),
+    )
     st.session_state["holdings_rows"] = pad_holding_rows(imported_df.to_dict("records"))
     st.session_state["holdings_paste_text"] = HOLDINGS_TEXT_TEMPLATE
     st.session_state["widget_reset_nonce"] = st.session_state.get("widget_reset_nonce", 0) + 1
