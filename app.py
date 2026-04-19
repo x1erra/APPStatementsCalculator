@@ -4141,17 +4141,28 @@ st.markdown(
         background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     }
     div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #2563eb 0%, #0f766e 100%);
-        border: 0;
-        color: #ffffff;
+        background: linear-gradient(135deg, #2563eb 0%, #0f766e 100%) !important;
+        border: 0 !important;
+        color: #ffffff !important;
     }
     div[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #1d4ed8 0%, #0f766e 100%);
-        border: 0;
-        color: #ffffff;
+        background: linear-gradient(135deg, #1d4ed8 0%, #0f766e 100%) !important;
+        border: 0 !important;
+        color: #ffffff !important;
+    }
+    div[data-testid="stSidebar"] .stButton > button[kind="primary"]:focus {
+        box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25) !important;
+        color: #ffffff !important;
     }
     div[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
         color: #9ca3af;
+    }
+    div[data-testid="stAlert"] {
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+    }
+    div[data-testid="stAlert"] [data-testid="stMarkdownContainer"] {
+        font-size: 0.95rem;
     }
     </style>
     """,
@@ -4168,7 +4179,7 @@ st.markdown(
     '<div class="app-subtitle">Portfolio Composition and Portfolio Breakdown.</div>',
     unsafe_allow_html=True,
 )
-st.warning("Use the correct support files for the entered holdings. Excel and CSV are supported.")
+st.info("Upload the matching support files before running a calculation.")
 
 if "draft_initialized" not in st.session_state:
     draft_holdings, draft_support_files, draft_sma_override, draft_factset_override = load_draft_state()
@@ -4192,7 +4203,7 @@ with st.sidebar:
         type=["xlsx", "xls", "xlsm", "csv", "zip"],
         accept_multiple_files=True,
         key=f"support_files_uploader_{widget_nonce}",
-        help="Upload the monthly ZIP bundles or the needed support files directly.",
+        help="Upload the monthly FactSet ZIP bundles or the specific support files for the holdings entered on the page. Extra files are ignored; missing required files will stop the calculation.",
     )
 
     active_factset_override = st.session_state.get("saved_factset_model_file")
