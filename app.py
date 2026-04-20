@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 from zipfile import ZipFile
 
 import pandas as pd
@@ -543,6 +544,7 @@ BASE_DIR = Path(__file__).resolve().parent
 REFERENCE_DIR = BASE_DIR / "Reference"
 DATA_DIR = Path(os.environ.get("APP_DATA_DIR", BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+APP_TIMEZONE = ZoneInfo(os.environ.get("APP_TIMEZONE", "America/Toronto"))
 MANUAL_HOLDINGS_COLUMNS = ["Fund Code", "Fund Description", "Total MV (CAD)", "saa_taa"]
 HOLDING_TYPE_OPTIONS = ["SAA", "TAA", "SMA"]
 DEFAULT_HOLDINGS_INPUT = pd.DataFrame(
@@ -1531,21 +1533,35 @@ def save_account_history(entries: List[dict]) -> None:
     HISTORY_PATH.write_text(json.dumps({"entries": safe_entries}))
 
 
+def format_saved_datetime(value: object) -> str:
+    text = normalize_text(value)
+    if not text:
+        return "No saved date"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=APP_TIMEZONE)
+    local_dt = parsed.astimezone(APP_TIMEZONE)
+    date_text = local_dt.strftime("%b %d, %Y")
+    time_text = local_dt.strftime("%I:%M %p").lstrip("0")
+    return f"{date_text} {time_text}"
+
+
 def format_history_entry(entry: dict) -> str:
     label = normalize_text(entry.get("label")) or "Untitled portfolio"
-    created_at = normalize_text(entry.get("created_at"))
     total_mv = entry.get("portfolio_total")
     total_text = "Unknown MV"
     if isinstance(total_mv, (int, float)):
         total_text = format_currency(float(total_mv))
-    date_text = created_at[:16].replace("T", " ") if created_at else "No date"
+    date_text = format_saved_datetime(entry.get("created_at"))
     holdings_count = len(entry.get("holdings", []) or [])
     return f"{date_text} | {total_text} | {label} | {holdings_count} holdings"
 
 
 def format_history_entry_details(entry: dict) -> str:
     label = normalize_text(entry.get("label")) or "Untitled portfolio"
-    created_at = normalize_text(entry.get("created_at"))
     total_mv = entry.get("portfolio_total")
     total_text = format_currency(float(total_mv)) if isinstance(total_mv, (int, float)) else "Unknown"
     holdings = entry.get("holdings", []) or []
@@ -1556,7 +1572,7 @@ def format_history_entry_details(entry: dict) -> str:
         if model_name:
             models.append(model_name)
     model_text = ", ".join(models) if models else "No model detected"
-    date_text = created_at.replace("T", " ") if created_at else "No saved date"
+    date_text = format_saved_datetime(entry.get("created_at"))
     codes = [
         normalize_text(row.get("Fund Code"))
         for row in holdings
@@ -1596,7 +1612,7 @@ def save_account_history_entry(
     factset_model_file: Optional[dict],
     results: dict,
 ) -> dict:
-    created_at = datetime.now().isoformat(timespec="seconds")
+    created_at = datetime.now(APP_TIMEZONE).isoformat(timespec="seconds")
     clean_label = normalize_text(label) or build_default_history_label(results)
     entry = {
         "id": uuid4().hex,
