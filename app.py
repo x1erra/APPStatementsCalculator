@@ -1202,9 +1202,9 @@ def build_support_candidates(
     )
 
     series_suffix = infer_model_series_suffix(fund_description)
-    if series_suffix == "C" and derived:
-        candidates.append(derived)
     if series_suffix == "C":
+        if derived:
+            candidates.append(derived)
         direct_class_candidate = derive_250xx_support_code_from_fund_code(fund_code)
         if direct_class_candidate:
             candidates.append(direct_class_candidate)
@@ -1212,11 +1212,17 @@ def build_support_candidates(
             class_candidate = derive_class_support_code_from_factset_code(factset_code)
             if class_candidate:
                 candidates.append(class_candidate)
-    candidates.extend(factset_codes)
-    if derived:
-        candidates.append(derived)
+        if entered:
+            candidates.append(entered)
+            entered_class_candidate = derive_class_support_code_from_factset_code(entered)
+            if entered_class_candidate:
+                candidates.append(entered_class_candidate)
+    else:
+        candidates.extend(factset_codes)
+        if derived:
+            candidates.append(derived)
 
-    if entered:
+    if entered and series_suffix != "C":
         candidates.append(entered)
         if entered.isdigit():
             candidates.append(str(int(entered) + 1).zfill(len(entered)))
@@ -1289,11 +1295,11 @@ def infer_sma_row_from_description(fund_code: object, description: object) -> Op
 
 
 def get_sma_row_for_holding(holding: pd.Series, sma_override: Optional[dict] = None) -> Optional[pd.Series]:
+    if normalize_holding_type(holding.get("saa_taa")) != "SMA":
+        return None
     row = lookup_sma_row(holding.get("Fund Code"), sma_override=sma_override)
     if row is not None:
         return row
-    if normalize_holding_type(holding.get("saa_taa")) != "SMA":
-        return None
     return infer_sma_row_from_description(
         holding.get("Fund Code"),
         holding.get("Fund Description"),
